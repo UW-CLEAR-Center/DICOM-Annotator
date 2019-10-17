@@ -42,3 +42,10 @@ the lower upper gray can be reached is {- l * (grayscale of white of the images 
 whether turn on debug model
 ##  -p
 whether can place or remove points on images
+
+# Funding:
+This work was completed by investigators at the University of Washington's Clinical Learning, Evidence And Research (CLEAR) Center for Musculoskeletal Disorders and supported by a research grant from the National Institute of Arthritis and Musculoskeletal and Skin Diseases (NIAMS) of the National Institutes of Health, under Award Number P30AR072572. 
+
+# Citation:
+If you would like to use this code for a research project please use the acknowledgement below all publications.  This helps us continue to support this program and continue to innovate.
+DICOMAnnotator was developed through the University of Washington's Clinical Learning, Evidence And Research (CLEAR) Center for Musculoskeletal Disorders and supported by a research grant from the National Institute of Arthritis and Musculoskeletal and Skin Diseases (NIAMS) of the National Institutes of Health, under Award Number P30AR072572.
