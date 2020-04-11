@@ -10,10 +10,7 @@ from PyQt5 import QtCore, QtGui
 
 from DicomAnnotator.utils.namerules import *
 from DicomAnnotator.app.instructions import *
-from DicomAnnotator.app.sanity_check import *
 
-
-nr = nameRules()
 tt = toolTips()
 
 class MyCheckBox(QCheckBox):
@@ -33,24 +30,28 @@ class MyCheckBox(QCheckBox):
 
 class AppWidgets(QMainWindow):
     def __init__(self, 
-                  ImgIDList,
-                  columnStretch,
+                 ImgIDList,
+                 configs,
+                 nameRules,
+                 columnStretch,
                  parent=None
                    ):
         QMainWindow.__init__(self, parent)
 
-        self.usrnm_temp_file = nr.temp_filename[0]
-        self.taborder_temp_file = nr.temp_filename[1]
-        self.scoresys_temp_file = nr.temp_filename[2]
+        self.nr = nameRules
+        self.usrnm_temp_file = self.nr.temp_filename[0]
+        self.taborder_temp_file = self.nr.temp_filename[1]
+        self.scoresys_temp_file = self.nr.temp_filename[2]
 
+        self.configs = configs
         self.columnStretch = columnStretch
         self.ImgIDList = ImgIDList
-        self.VBLabelList = nr.VBLabelList
-        self.CoordTypeList = nr.CoordTypeList # 4 corners: order is sp, sa, ia, ip
+        self.VBLabelList = configs['region_identifier_list']
+        self.CoordTypeList = configs['bounding_polygon_vertices_names']
         self.CoordType = self.CoordTypeList[0]
         self.num_unreadable = 0
             
-        self.save_status = nr.saved
+        self.save_status = self.nr.saved
 
         # some predefined font size
         ## font size 12
@@ -82,8 +83,8 @@ class AppWidgets(QMainWindow):
         else:
             self.tabOrder = True
         self.tabOrderLabel = QLabel('Select the order of level tabs you like\t\t')
-        self.tab_order_radiobuttons1 = QRadioButton("S1 Top")        
-        self.tab_order_radiobuttons2 = QRadioButton("S1 Bottom")        
+        self.tab_order_radiobuttons1 = QRadioButton("{} Top".format(self.configs['region_identifier_list'][0]))        
+        self.tab_order_radiobuttons2 = QRadioButton("{} Bottom".format(self.configs['region_identifier_list'][0]))   
         if self.tabOrder:
             self.tab_order_radiobuttons1.setChecked(True)
         else:
@@ -92,18 +93,18 @@ class AppWidgets(QMainWindow):
         self.tab_order_group.addButton(self.tab_order_radiobuttons1)
         self.tab_order_group.addButton(self.tab_order_radiobuttons2)
         
-        # a combo box to select scoring system, default scoring system is nr.mABQ
+        # a combo box to select scoring system, default scoring system is self.nr.mABQ
         if exists(self.scoresys_temp_file):
             with open(self.scoresys_temp_file, 'r') as f:
                 fx_score_sys = f.read()
         else:
-            fx_score_sys = nr.mABQ       
+            fx_score_sys = self.nr.mABQ       
         if exists(self.scoresys_temp_file):
             self.score_sys_Label = QLabel('The fracture scoring system selected: ')
         else:
             self.score_sys_Label = QLabel('Select a fracture scoring system: ')
         self.score_sys_select = QComboBox()
-        for i, c in enumerate(nr.candidateScoringSys):
+        for i, c in enumerate(self.nr.candidateScoringSys):
             self.score_sys_select.addItem(c)
             if c == fx_score_sys:
                 self.score_sys_select.setCurrentIndex(i)
@@ -154,9 +155,9 @@ class AppWidgets(QMainWindow):
         self.save_button = QPushButton('Save',default=False, autoDefault=False)
 
         # mode radiobuttons
-        self.mode_radiobuttons1 = QRadioButton(nr.edit)
+        self.mode_radiobuttons1 = QRadioButton(self.nr.edit)
         self.mode_radiobuttons1.setChecked(True)
-        self.mode_radiobuttons2 = QRadioButton(nr.view)
+        self.mode_radiobuttons2 = QRadioButton(self.nr.view)
         self.mode_vbox = QVBoxLayout()
         self.mode_group = QButtonGroup()
         self.mode_group.addButton(self.mode_radiobuttons1)
@@ -196,30 +197,38 @@ class AppWidgets(QMainWindow):
         self.points_off_on_button.setToolTip(tt.points_toggle_off)
         self.inverse_gray_button = QPushButton(
             'Invert the Gray',default=False, autoDefault=False)
-        self.frac_label = QLabel('Osteoporosis Fracture:')
+
+
+        if self.configs['region_labels']['radiobuttons'] is None:
+            self.frac_label = QLabel('Osteoporosis Fracture:')
+        else:
+            if self.configs['non_default_regions_description'] is None:
+                self.frac_label = QLabel('Regions not Labeled to {}:'.format(self.ScoreSys.default))
+            else:
+                self.frac_label = QLabel(self.configs['non_default_regions_description'])
         self.frac_vb_label = QLabel()
         self.frac_vb_label.setWordWrap(True)
-        if self.ScoreSys.non_ost_deform:
+        if self.configs['region_labels']['radiobuttons'] is None and self.ScoreSys.non_ost_deform:
             self.nonost_label = QLabel(self.ScoreSys.non_ost_deform+':')
         else:
             self.nonost_label = QLabel()
         self.nonost_vb_label = QLabel()
         self.nonost_vb_label.setWordWrap(True)
-        self.normal_label = QLabel(self.ScoreSys.normal+':')
+        self.normal_label = QLabel(self.ScoreSys.default+':')
         self.normal_vb_label = QLabel()
         self.normal_vb_label.setWordWrap(True)
         self._storing_tabs_builder()
 
         # osteoporosis radiobuttons related
-        self.ost_label = QLabel('Select an image label')
+        self.ost_label = QLabel(self.configs['image_label_description'])
         self.ost_group = QButtonGroup()
         self.ost_radiobuttons = []
-        for i, category in enumerate(nr.OstLabels):
+        for i, category in enumerate(self.configs['image_label']):
             self.ost_radiobuttons.append(QRadioButton(category))       
             self.ost_group.addButton(self.ost_radiobuttons[i])
-        # self.ost_radiobuttons1 = QRadioButton(nr.hasNoOst)       
-        # self.ost_radiobuttons2 = QRadioButton(nr.hasOst)        
-        # self.ost_radiobuttons3 = QRadioButton(nr.unsureOst)
+        # self.ost_radiobuttons1 = QRadioButton(self.nr.hasNoOst)       
+        # self.ost_radiobuttons2 = QRadioButton(self.nr.hasOst)        
+        # self.ost_radiobuttons3 = QRadioButton(self.nr.unsureOst)
         # self.ost_group.addButton(self.ost_radiobuttons1)
         # self.ost_group.addButton(self.ost_radiobuttons2)
         # self.ost_group.addButton(self.ost_radiobuttons3)
@@ -254,7 +263,7 @@ class AppWidgets(QMainWindow):
             self.clear_point_btns.append(
                 QPushButton('Clear Activated Point', default=False, autoDefault=False))
             self.clear_coords_btns.append(
-                QPushButton('Clear Level', default=False, autoDefault=False))
+                QPushButton('Clear Activated Region\'s Points', default=False, autoDefault=False))
             self.clear_last_btns.append(
                 QPushButton('Clear Last Labeled Point', default=False, autoDefault=False))
             self.tabs.append(QWidget())
@@ -293,7 +302,7 @@ class AppWidgets(QMainWindow):
         bx_cor_coords = []
         self.cor_X_Label = []
         self.cor_Y_Label = []
-        for i in range(len(nr.CoordTypeList)):
+        for i in range(len(self.CoordTypeList)):
             hbox, cor_X_Label, cor_Y_Label = self._corner_coords_label_builder()
             bx_cor_coords.append(hbox)
             self.cor_X_Label.append(cor_X_Label)
@@ -303,24 +312,14 @@ class AppWidgets(QMainWindow):
         box = []
         for i, vb in enumerate(self.VBLabelList):
             self.coords_tables.append(QTabWidget())           
-            self.bx_tab_sp = QWidget()
-            self.bx_tab_sp.layout = bx_cor_coords[0][i]            
-            self.coords_tables[i].addTab(self.bx_tab_sp, 'SuPos+')
-            self.bx_tab_sp.setLayout(self.bx_tab_sp.layout)
-            self.bx_tab_sa = QWidget()
-            self.bx_tab_sa.layout = bx_cor_coords[1][i]
-            self.bx_tab_sa.setLayout(self.bx_tab_sa.layout)
-            self.coords_tables[i].addTab(self.bx_tab_sa, 'SuAn*')
-            
-            if vb != 'S1':
-                self.bx_tab_ia = QWidget()
-                self.bx_tab_ia.layout = bx_cor_coords[2][i]            
-                self.coords_tables[i].addTab(self.bx_tab_ia, u'InAn\u00B0')
-                self.bx_tab_ia.setLayout(self.bx_tab_ia.layout)
-                self.bx_tab_ip = QWidget()
-                self.bx_tab_ip.layout = bx_cor_coords[3][i]
-                self.bx_tab_ip.setLayout(self.bx_tab_ip.layout)
-                self.coords_tables[i].addTab(self.bx_tab_ip, u'InPos\u2A2F')
+            index = self.configs['region_identifier_list'].index(vb)
+            for j, name in enumerate(self.configs['bounding_polygon_vertices_names']):
+                if j >= self.configs['bounding_polygon_type'][index]:
+                    break
+                self.bx_tab_sp = QWidget()
+                self.bx_tab_sp.layout = bx_cor_coords[j][i]            
+                self.coords_tables[i].addTab(self.bx_tab_sp, self.configs['bounding_polygon_vertices_tabs'][j])
+                self.bx_tab_sp.setLayout(self.bx_tab_sp.layout)
             
             box.append(QHBoxLayout())
             box[i].addWidget(self.coords_tables[i])
@@ -355,9 +354,11 @@ class AppWidgets(QMainWindow):
     def _hardware_checkbox_builder(self):
         self.hardware_checkboxes = []
         for i, vb in enumerate(self.VBLabelList):
-            hardware_checkBox = MyCheckBox(nr.region_label_checkbox)
+            if self.configs['region_labels']['checkbox'] is None:
+                hardware_checkBox = None
+            else:
+                hardware_checkBox = MyCheckBox(self.configs['region_labels']['checkbox'])
             self.hardware_checkboxes.append(hardware_checkBox)
-
 
     def set_pushbutton_tooltips(self):
         """
@@ -415,7 +416,8 @@ class AppWidgets(QMainWindow):
                 if l != None:
                     self.frac_rbs[i][co].setFont(self.font_12)
                     co += 1
-            self.hardware_checkboxes[i].setFont(self.font_12)        
+            if self.hardware_checkboxes[i] is not None:
+                self.hardware_checkboxes[i].setFont(self.font_12)        
         self.mode_radiobuttons1.setFont(self.font_12)
         self.mode_radiobuttons2.setFont(self.font_12)
         self.flip_image_button.setFont(self.font_12)        

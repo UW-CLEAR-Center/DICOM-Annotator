@@ -13,23 +13,21 @@ from PyQt5 import QtCore, QtGui
 
 from DicomAnnotator.utils.namerules import *
 from DicomAnnotator.app.instructions import *
-from DicomAnnotator.app.sanity_check import *
 
 import numpy as np
 import copy
-
-nr = nameRules()
-ModuleName = nr.moduleName
 
 class InfoStorageDicts:
     """
     The dictionaries used in the backend
     """
 
-    def __init__(self, ImgIDList, csv_path):
-        self.VBLabelList = nr.VBLabelList
+    def __init__(self, ImgIDList, csv_path, configs, nameRules):
+        self.VBLabelList = configs['region_identifier_list']
         self.ImgIDList = ImgIDList
         self.fpath = csv_path
+        self.configs = configs
+        self.nr = nameRules
     
     def _empty_dicts(self):
         """
@@ -45,19 +43,19 @@ class InfoStorageDicts:
         self.WindowLevelDict = {}
         self.InverseGrayDict = {}
         for ID in self.ImgIDList:
-            VBDict = dict((vb, {nr.SupPostCoords:(None,None), \
-                                nr.SupAntCoords:(None,None), \
-                                nr.InfAntCoords:(None,None), \
-                                nr.InfPostCoords:(None,None), \
-                                nr.Fracture: self.ScoreSys.normal}) \
+            temp_dict = {}
+            for name in self.configs['bounding_polygon_vertices_names']:
+                temp_dict[name] = (None, None)
+            temp_dict[self.nr.Fracture] = self.ScoreSys.default
+            VBDict = dict((vb, temp_dict.copy()) \
                        for vb in self.VBLabelList)
-            hwDict = dict((vb, nr.nohardware) for vb in self.VBLabelList)
+            hwDict = dict((vb, self.nr.nohardware) for vb in self.VBLabelList)
             self.StoreDict[ID] = VBDict
-            self.StatusDict[ID] = nr.untouch
-            self.ControversialDict[ID] = {nr.Modifier:None, nr.ConPart:'', nr.ConStatus:nr.uncontroversial}
-            self.ReadableStatusDict[ID] = nr.readable
+            self.StatusDict[ID] = self.nr.untouch
+            self.ControversialDict[ID] = {self.nr.Modifier:None, self.nr.ConPart:'', self.nr.ConStatus:self.nr.uncontroversial}
+            self.ReadableStatusDict[ID] = self.nr.readable
             self.HardwareStatusDict[ID] = hwDict
-            self.OrientationDict[ID] = nr.face_user_left
+            self.OrientationDict[ID] = self.nr.face_user_left
             self.OstLabelingDict[ID] = None
             self.WindowLevelDict[ID] = (None, None)
             self.InverseGrayDict[ID] = False
@@ -74,38 +72,34 @@ class InfoStorageDicts:
             with open(self.fpath) as csv_file:
                 reader = csv.DictReader(csv_file)
                 for row in reader:
-                    if row[nr.head_status] != '':
-                        self.StatusDict[row[nr.head_imgID]] = row[nr.head_status]
-                        
-                    if row[nr.head_SupPostX] != '' and row[nr.head_SupPostY] != '':
-                        self.StoreDict[row[nr.head_imgID]][row[nr.head_vbLabel]][nr.SupPostCoords] = (float(row[nr.head_SupPostX]), float(row[nr.head_SupPostY]))
-                    if row[nr.head_SupAntX] != '' and row[nr.head_SupAntY] != '':
-                        self.StoreDict[row[nr.head_imgID]][row[nr.head_vbLabel]][nr.SupAntCoords] = (float(row[nr.head_SupAntX]), float(row[nr.head_SupAntY]))
-                    if row[nr.head_InfAntX] != '' and row[nr.head_InfAntY] != '':
-                        self.StoreDict[row[nr.head_imgID]][row[nr.head_vbLabel]][nr.InfAntCoords] = (float(row[nr.head_InfAntX]), float(row[nr.head_InfAntY]))
-                    if row[nr.head_InfPostX] != '' and row[nr.head_InfPostY] != '':
-                        self.StoreDict[row[nr.head_imgID]][row[nr.head_vbLabel]][nr.InfPostCoords] = (float(row[nr.head_InfPostX]), float(row[nr.head_InfPostY]))
+                    if row[self.nr.head_status] != '':
+                        self.StatusDict[row[self.nr.head_imgID]] = row[self.nr.head_status]
+                    for i, coord in enumerate(self.configs['bounding_polygon_vertices_names']):
+                        head_X = self.nr.head_vertices[int(2 * i)]
+                        head_Y = self.nr.head_vertices[int(2 * i + 1)]
+                        if row[head_X] != '' and row[head_Y] != '':
+                            self.StoreDict[row[self.nr.head_imgID]][row[self.nr.head_vbLabel]][coord] = (float(row[head_X]), float(row[head_Y]))
                     
-                    if row[nr.head_frac] != '':
-                        self.StoreDict[row[nr.head_imgID]][row[nr.head_vbLabel]][nr.Fracture] = row[nr.head_frac]
-                    if row[nr.head_modifier] != '':
-                        self.ControversialDict[row[nr.head_imgID]][nr.Modifier] = row[nr.head_modifier]
+                    if row[self.nr.head_frac] != '':
+                        self.StoreDict[row[self.nr.head_imgID]][row[self.nr.head_vbLabel]][self.nr.Fracture] = row[self.nr.head_frac]
+                    if row[self.nr.head_modifier] != '':
+                        self.ControversialDict[row[self.nr.head_imgID]][self.nr.Modifier] = row[self.nr.head_modifier]
                     
-                    if row[nr.head_conParts] != '':
-                        self.ControversialDict[row[nr.head_imgID]][nr.ConPart] = row[nr.head_conParts]
-                    if row[nr.head_conStatus] != '':
-                        self.ControversialDict[row[nr.head_imgID]][nr.ConStatus] = row[nr.head_conStatus]
-                    if row[nr.head_readableStatus] != '':
-                        self.ReadableStatusDict[row[nr.head_imgID]] = row[nr.head_readableStatus]
-                    if row[nr.head_hardwareStatus] != '':
-                        self.HardwareStatusDict[row[nr.head_imgID]][row[nr.head_vbLabel]] = row[nr.head_hardwareStatus]
-                    if row[nr.head_orientation] != '':
-                        self.OrientationDict[row[nr.head_imgID]] = row[nr.head_orientation]
-                    if row[nr.head_ostLabeling] != '':
-                        self.OstLabelingDict[row[nr.head_imgID]] = row[nr.head_ostLabeling]
+                    if row[self.nr.head_conParts] != '':
+                        self.ControversialDict[row[self.nr.head_imgID]][self.nr.ConPart] = row[self.nr.head_conParts]
+                    if row[self.nr.head_conStatus] != '':
+                        self.ControversialDict[row[self.nr.head_imgID]][self.nr.ConStatus] = row[self.nr.head_conStatus]
+                    if row[self.nr.head_readableStatus] != '':
+                        self.ReadableStatusDict[row[self.nr.head_imgID]] = row[self.nr.head_readableStatus]
+                    if row[self.nr.head_hardwareStatus] != '':
+                        self.HardwareStatusDict[row[self.nr.head_imgID]][row[self.nr.head_vbLabel]] = row[self.nr.head_hardwareStatus]
+                    if row[self.nr.head_orientation] != '':
+                        self.OrientationDict[row[self.nr.head_imgID]] = row[self.nr.head_orientation]
+                    if row[self.nr.head_ostLabeling] != '':
+                        self.OstLabelingDict[row[self.nr.head_imgID]] = row[self.nr.head_ostLabeling]
                         
-                    if row[nr.head_min_intensity] != '' and row[nr.head_max_intensity] != '':
-                        self.WindowLevelDict[row[nr.head_imgID]] = (float(row[nr.head_min_intensity]), float(row[nr.head_max_intensity]))
+                    if row[self.nr.head_min_intensity] != '' and row[self.nr.head_max_intensity] != '':
+                        self.WindowLevelDict[row[self.nr.head_imgID]] = (float(row[self.nr.head_min_intensity]), float(row[self.nr.head_max_intensity]))
 
-                    if row[nr.head_inverse_gray] == 'True':
-                        self.InverseGrayDict[row[nr.head_imgID]] = True
+                    if row[self.nr.head_inverse_gray] == 'True':
+                        self.InverseGrayDict[row[self.nr.head_imgID]] = True

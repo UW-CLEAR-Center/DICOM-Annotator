@@ -6,25 +6,22 @@ from PyQt5 import QtCore, QtGui
 
 from DicomAnnotator.utils.namerules import *
 from DicomAnnotator.app.instructions import *
-from DicomAnnotator.app.sanity_check import *
 from DicomAnnotator.app.widgets import AppWidgets
 
-
-nr = nameRules()
-ModuleName = nr.moduleName
 tt = toolTips()
-if not os.path.exists(nr.temp_dirname):
-    os.makedirs(nr.temp_dirname)
-with open(ModuleName+'/app/instructions.html') as f:
+with open(os.path.join(os.getcwd(), 'DicomAnnotator', 'app', 'instructions.html')) as f:
     instructions = f.read()
-
 
 
 class AppLayouts(AppWidgets):
     def __init__(self,
                  ImgIDList,
+                 configs,
+                 nameRules,
                  mainPageColumnStretch):
-        AppWidgets.__init__(self, ImgIDList, mainPageColumnStretch)
+        AppWidgets.__init__(self, ImgIDList, configs, nameRules,  mainPageColumnStretch)
+        if not os.path.exists(self.nr.temp_dirname):
+            os.makedirs(self.nr.temp_dirname)
 
 
     def start_ui(self):
@@ -43,7 +40,8 @@ class AppLayouts(AppWidgets):
         self.tabOrderbox.addWidget(self.tab_order_radiobuttons2)
         self.start_layout = QVBoxLayout()
         self.start_layout.addLayout(self.userHbox)
-        self.start_layout.addLayout(self.scoreSysHbox)
+        if self.configs['region_labels']['radiobuttons'] is None:
+            self.start_layout.addLayout(self.scoreSysHbox)
         self.start_layout.addLayout(self.tabOrderbox)
         self.start_layout.addWidget(self.start_button)
         templayout = QVBoxLayout()
@@ -54,7 +52,8 @@ class AppLayouts(AppWidgets):
         self.mylayout.addStretch()
         self.mylayout.setStretch(0,1)
         self.mylayout.setStretch(1,1)
-        self.mylayout.setStretch(2,1)
+        if self.configs['region_labels']['radiobuttons'] is None:
+            self.mylayout.setStretch(2,1)
         cen_wid = QWidget()
         cen_wid.setLayout(self.mylayout)
         self.setCentralWidget(cen_wid)
@@ -107,7 +106,8 @@ class AppLayouts(AppWidgets):
     def labelling_ui(self):
         ''' right side of the main page'''
         self.labelling_layout = QVBoxLayout()
-        self.labelling_layout.addLayout(self.ost_labeling_box)
+        if self.configs['region_labels']['checkbox'] is not None:
+            self.labelling_layout.addLayout(self.ost_labeling_box)
         self.labelling_layout.addWidget(self.table)
         self.labelling_layout.addWidget(self.points_off_on_button)
         self.labelling_layout.addWidget(self.inverse_gray_button)
@@ -151,16 +151,16 @@ class AppLayouts(AppWidgets):
         frame.setFrameShape(QFrame.StyledPanel)
         frame.setFrameShadow(QFrame.Raised)
         vbox = QVBoxLayout(frame)
-        if type_ in self.ost_fx:
+        if type_ == 'nondefault':
             vbox.addWidget(self.frac_label)
             vbox.addWidget(self.frac_vb_label)
-        elif self.ScoreSys.non_ost_deform != None \
+        elif type_ == self.ScoreSys.default:
+            vbox.addWidget(self.normal_label)
+            vbox.addWidget(self.normal_vb_label)
+        elif self.configs['region_labels']['radiobuttons'] is None and self.ScoreSys.non_ost_deform != None \
             and type_ == self.ScoreSys.non_ost_deform:
             vbox.addWidget(self.nonost_label)
             vbox.addWidget(self.nonost_vb_label)
-        elif type_ == self.ScoreSys.normal:
-            vbox.addWidget(self.normal_label)
-            vbox.addWidget(self.normal_vb_label)
         vbox.addStretch()
         vbox.setStretch(0,1)
         vbox.setStretch(1,4)
@@ -170,15 +170,15 @@ class AppLayouts(AppWidgets):
         return rst_box
 
     def _frac_label_gather_box_builder(self):
-        vbox_normal = self._frac_vb_label_builder(type_=self.ScoreSys.normal)
-        vbox_ost = self._frac_vb_label_builder(type_=self.ost_fx[0])
-        if self.ScoreSys.non_ost_deform != None:
-            vbox_nonost = self._frac_vb_label_builder(
-                type_=self.ScoreSys.non_ost_deform)
+        vbox_normal = self._frac_vb_label_builder(type_=self.ScoreSys.default)
+        vbox_ost = self._frac_vb_label_builder(type_='nondefault')
         self.frac_label_gather_box = QVBoxLayout()
         self.frac_label_gather_box.addLayout(vbox_ost)
-        if self.ScoreSys.non_ost_deform != None:
-            self.frac_label_gather_box.addLayout(vbox_nonost)
+        if self.configs['region_labels']['radiobuttons'] is None:
+            if self.ScoreSys.non_ost_deform != None:
+                vbox_nonost = self._frac_vb_label_builder(
+                    type_=self.ScoreSys.non_ost_deform)
+                self.frac_label_gather_box.addLayout(vbox_nonost)
 
     def _status_box_builder(self):
         status_frame = QFrame()

@@ -6,9 +6,11 @@ from argparse import ArgumentParser
 import matplotlib.pyplot as plt
 plt.switch_backend('qt5Agg')
 import json
+import numpy as np
 
 from DicomAnnotator.app.myApp import *
 from DicomAnnotator.utils.namerules import *
+from DicomAnnotator.utils.cofig_process import *
 
 """
 Construct the ImgIDList
@@ -17,9 +19,10 @@ def get_ImgIDList(root_dir):
     rst = []
     for root, dirs, files in os.walk(root_dir):     
         for file in files:
-            if file.endswith('.dcm') or file.endswith('.tiff'):
+            if file.endswith('.dcm') or file.endswith('.tiff') or file.endswith('.png') or file.endswith('jpg') or file.endswith('jpeg'):
                 # rst.append(join(root,file))
                 rst.append(file)
+    rst.sort()
     return rst
 
 plt.close('all')
@@ -43,14 +46,17 @@ parser.add_argument("-d", "--debug-mode", action="store_true",
 					help="whether turn on debug model",)
 parser.add_argument("-p", "--block-points", action="store_true",
 					help="whether can place or remove points on images",)
-
+parser.add_argument("-c", "--config_dir", default=os.getcwd(), type=str,
+					help="whether can place or remove points on images",)
 # parser.add_argument("-g", "--image-format", type=str, default='dcm',
 # 					help="The image format. Currently only support dcm and tiff",)
 args = parser.parse_args()
 
-nr = nameRules()
-with open(nr.moduleName + '/configurations.json') as f:
-    configs = json.load(f)
+config_filepath = os.path.join(args.config_dir, 'DicomAnnotator', 'configurations.json')
+configs = configuration_processing(config_filepath)
+
+nr = nameRules(configs)
+
 ImageIDList = get_ImgIDList(configs['input_directory'])
 if len(ImageIDList) == 0:
     print('There is no image in the directory or the directory does not exist!')
@@ -63,15 +69,15 @@ if args.begin_image:
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    main = SpineLabelingApp( ImageIDList, configs['input_directory'],
-                             configs['output_path'], 
-                             zoom_base_scale=configs['zooming_speed'],
+    main = SpineLabelingApp( ImageIDList,
+                             configs,
+                             nr,
                              begin=args.begin_image,
-                             wl_scale=configs['window_level_sensitivity'],
                              upper_gray_relax_coeff=args.upper_gray_relax_coeff,
                              lower_gray_relax_coeff=args.lower_gray_relax_coeff,
                              block_points=args.block_points,
-                             debug_mode=args.debug_mode)
+                             debug_mode=args.debug_mode,
+                           )
     main.setWindowTitle('Spine Labeling App')
     main.show()
     sys.exit(app.exec_())

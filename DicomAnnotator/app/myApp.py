@@ -1,6 +1,7 @@
 import SimpleITK as sitk
 import tifffile as tiff
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 from IPython.display import display
 
 import csv
@@ -8,22 +9,21 @@ import sys
 import time
 import math
 from os.path import join
+import os
 
 from PyQt5.QtWidgets import *
 from PyQt5 import QtCore, QtGui
 
 from DicomAnnotator.utils.namerules import *
+from DicomAnnotator.utils.image_normalization import *
 from DicomAnnotator.app.instructions import *
-from DicomAnnotator.app.sanity_check import *
 from DicomAnnotator.app.layouts import AppLayouts
 from DicomAnnotator.app.storage_dicts import InfoStorageDicts
 
 import numpy as np
 
-nr = nameRules()
-ModuleName = nr.moduleName
 tt = toolTips()
-with open(ModuleName+'/app/instructions.html') as f:
+with open(os.path.join(os.getcwd(), 'DicomAnnotator', 'app', 'instructions.html')) as f:
     instructions = f.read()
 
 def display_decor( func ):
@@ -35,7 +35,7 @@ def display_decor( func ):
         oriImgPointer = self.ImgPointer
         func(self)
         curImgPointer = self.ImgPointer
-        while self.ReadableStatusDict[self.ImgIDList[self.ImgPointer]] == nr.unreadable:
+        while self.ReadableStatusDict[self.ImgIDList[self.ImgPointer]] == self.nr.unreadable:
             func(self)
             if self.ImgPointer == curImgPointer:
                 self.ImgPointer = oriImgPointer
@@ -60,19 +60,18 @@ def unsave_decor(func):
     def wrapper(*args):
         self = args[0]       
         func(*args)
-        if not self.init_display_flag and self.mode == nr.edit:
-            self.save_status = nr.unsaved
+        if not self.init_display_flag and self.mode == self.nr.edit:
+            self.save_status = self.nr.unsaved
             self.update_save_status_label()
     return wrapper
 
 class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
 
     def __init__(self,
-                 ImgIDList, ImageDir,
-                 csv_path,
+                 ImgIDList,
+                 configs,
+                 nameRules,
                  mainPageColumnStretch=[1,10,3],
-                 zoom_base_scale=1.2,
-                 wl_scale=5,
                  key_wl_scale=20,
                  upper_gray_relax_coeff=3,
                  lower_gray_relax_coeff=2,
@@ -82,14 +81,15 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                  parent=None,
                  ):
         self.count = 0
-        AppLayouts.__init__(self, ImgIDList, mainPageColumnStretch)
-        InfoStorageDicts.__init__(self, ImgIDList, csv_path)
+        ImageDir = configs['input_directory']
+        csv_path = configs['path_for_result_file']
+        AppLayouts.__init__(self, ImgIDList, configs, nameRules, mainPageColumnStretch)
+        InfoStorageDicts.__init__(self, ImgIDList, csv_path, configs, nameRules)
         QDialog.__init__(self, parent)
 
         self.ImageDir = ImageDir
-
-        self.zoom_base_scale = zoom_base_scale
-        self.wl_scale = wl_scale / 10
+        self.zoom_base_scale = configs['zooming_speed']
+        self.wl_scale = configs['window_level_sensitivity'] / 10
         self.key_wl_scale = key_wl_scale
         self.acc_zoom_scale = 1 # accumulative zooming scale
         self.upper_gray_relax_coeff = upper_gray_relax_coeff
@@ -98,12 +98,12 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.block_points = block_points
         self.debug_mode = debug_mode
 
-        self.time_log_file = nr.temp_filename[3]
+        self.time_log_file = self.nr.temp_filename[3]
         self.begin = begin
         self.num_unreadable = 0       
 
         self.VBPointer = 0 # the current processed VB, init as L1 
-        self.mode = nr.edit # current mode: edit or view
+        self.mode = self.nr.edit # current mode: edit or view
         self.cursor =QtGui.QCursor() # mouse cursor
 
         self.init_display_flag = True
@@ -146,7 +146,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.points_off_on_button.clicked.connect(self.points_off_on_button_on_click)
         self.inverse_gray_button.clicked.connect(self.inverse_gray_button_on_click)
         for radiobutton in self.ost_radiobuttons:
-            radiobutton.toggled.connect(lambda:self.ost_rb_on_change(radiobutton))
+            radiobutton.toggled.connect(lambda state, arg=radiobutton: self.ost_rb_on_change(arg))
         # self.ost_radiobuttons1.toggled.connect(lambda:self.ost_rb_on_change(self.ost_radiobuttons1))
         # self.ost_radiobuttons2.toggled.connect(lambda:self.ost_rb_on_change(self.ost_radiobuttons2))
         # self.ost_radiobuttons3.toggled.connect(lambda:self.ost_rb_on_change(self.ost_radiobuttons3))
@@ -162,7 +162,8 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                     lambda state, arg=self.frac_rbs[i][co]: self.on_frac_radiobuttons_change(arg))
                 co += 1
             self.coords_tables[i].currentChanged.connect(self.on_coords_tab_change)
-            self.hardware_checkboxes[i].stateChanged.connect(self.hardware_checkbox_state_change)
+            if self.hardware_checkboxes[i] is not None:
+                self.hardware_checkboxes[i].stateChanged.connect(self.hardware_checkbox_state_change)
         self.table.currentChanged.connect(self.on_tab_change)
 
 
@@ -177,17 +178,31 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         # deal with the mode radiobutton
         ## if current user and last modifier are different, use view mode
         if should_compare_users:
-            if self.ControversialDict[cur_image][nr.Modifier] != None and self.ControversialDict[cur_image][nr.Modifier] != self.username:
+            if self.ControversialDict[cur_image][self.nr.Modifier] != None and self.ControversialDict[cur_image][self.nr.Modifier] != self.username:
                 self.mode_radiobuttons2.setChecked(True)
 
         self.VBPointer = 0
         # Get the grey value of the image as a numpy array
-        if self.ImgIDList[self.ImgPointer].split('.')[-1] == 'dcm':
+        if self.ImgIDList[self.ImgPointer].split('.')[-1].lower() == 'dcm':
             self.img = sitk.ReadImage(join(self.ImageDir, self.ImgIDList[self.ImgPointer]))[:,:,0]
             self.npa = sitk.GetArrayViewFromImage(self.img)
-        elif self.ImgIDList[self.ImgPointer].split('.')[-1] == 'tiff':
+        elif self.ImgIDList[self.ImgPointer].split('.')[-1].lower() == 'tiff':
             self.npa = tiff.imread(join(self.ImageDir, self.ImgIDList[self.ImgPointer]))
-        possible_max_gray = 2**(math.ceil(math.log2(np.max(self.npa+1)))) -1
+        elif self.ImgIDList[self.ImgPointer].split('.')[-1].lower() == 'png':
+            self.npa = mpimg.imread(join(self.ImageDir, self.ImgIDList[self.ImgPointer]))
+        elif self.ImgIDList[self.ImgPointer].split('.')[-1].lower() in ['jpeg', 'jpg']:
+            self.npa = mpimg.imread(join(self.ImageDir, self.ImgIDList[self.ImgPointer]))
+        if len(self.npa.shape) == 3:
+            if self.npa.shape[0] == 3:
+                self.npa = self.npa[0, :, :]
+            elif self.npa.shape[1] == 3:
+                self.npa = self.npa[:, 0, :]
+            elif self.npa.shape[2] == 3:
+                self.npa = self.npa[:, :, 0]
+        # possible_max_gray = 2**(math.ceil(math.log2(np.max(self.npa+1)))) -1
+        bit_depth = math.ceil(math.log2(np.max(self.npa+1)))
+        if self.configs['auto_window_level']:
+            self.npa = my_image_normalize(self.npa, bit_depth=bit_depth)
         if self.InverseGrayDict[cur_image]:
             self.npa = np.max(self.npa)-self.npa#sitk.GetArrayViewFromImage(self.img)
 
@@ -195,7 +210,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.prevCursorLoc = self.cursor.pos().x(), self.cursor.pos().y()#event.xdata, event.ydata
         
         # flip the image if necessary
-        if self.OrientationDict[cur_image] == nr.face_user_right:
+        if self.OrientationDict[cur_image] == self.nr.face_user_right:
             self.npa = np.fliplr(self.npa)
     
         self.min_intensity = self.npa.min()
@@ -230,29 +245,25 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         otherwise 1
         """
         cur_image = self.ImgIDList[self.ImgPointer]
+        index = self.configs['region_identifier_list'].index(vb)
+        all_labeled = True
+        all_unlabeled = True
+        co = 0
+        for i, coords in enumerate(self.StoreDict[cur_image][vb]):
+            if coords == self.nr.Fracture:
+                continue
+            if co >= self.configs['bounding_polygon_type'][index]:
+                break
+            if self.StoreDict[cur_image][vb][coords] == (None, None):
+                all_labeled = False
+            else:
+                all_unlabeled = False
+            co += 1
         
-        if vb != 'S1':
-            if self.StoreDict[cur_image][vb][nr.SupPostCoords] == (None, None) \
-            and self.StoreDict[cur_image][vb][nr.SupAntCoords] == (None, None) \
-            and self.StoreDict[cur_image][vb][nr.InfAntCoords] == (None, None) \
-            and self.StoreDict[cur_image][vb][nr.InfPostCoords] == (None, None):
-                return 0
-
-            if self.StoreDict[cur_image][vb][nr.SupPostCoords] != (None, None) \
-            and self.StoreDict[cur_image][vb][nr.SupAntCoords] != (None, None) \
-            and self.StoreDict[cur_image][vb][nr.InfAntCoords] != (None, None) \
-            and self.StoreDict[cur_image][vb][nr.InfPostCoords] != (None, None):
-                return 2
-
-            return 1
-        if self.StoreDict[cur_image][vb][nr.SupPostCoords] == (None, None) \
-        and self.StoreDict[cur_image][vb][nr.SupAntCoords] == (None, None):
+        if all_unlabeled:
             return 0
-
-        if self.StoreDict[cur_image][vb][nr.SupPostCoords] != (None, None) \
-        and self.StoreDict[cur_image][vb][nr.SupAntCoords] != (None, None):
+        if all_labeled:
             return 2
-
         return 1
     
     def _init_tab_index(self):
@@ -311,47 +322,44 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         # want to specify the shift in pixels as we are dealing with display. We therefore (a) get the data 
         # point in the display coordinate system in pixel units (b) modify the point using pixel offset and
         # transform back to the data coordinate system for display.
+        # text_x_offset = 8
+        # text_y_offset = -15
+        # text_font = 15
+        # marker_size = 200
         text_x_offset = 6
         text_y_offset = -8
         text_font = 10       
         marker_size = 40
         
-        SupPostPnts = []
-        SupAntPnts = []
-        InfAntPnts = []
-        InfPostPnts = []
-        colors = []
+        vertices = []
+        for name in self.configs['bounding_polygon_vertices_names']:
+            vertices.append([])  
         
+        colors = []
         if self.points_off_on_status != 0:
             for vb in self.VBLabelList:
-                if self.StoreDict[cur_imgID][vb][nr.Fracture] == self.ScoreSys.normal:
+                if self.StoreDict[cur_imgID][vb][self.nr.Fracture] == self.ScoreSys.default:
                     color = 'yellow'
-                elif self.StoreDict[cur_imgID][vb][nr.Fracture] in self.ost_fx:
+                elif self.configs['region_labels']['radiobuttons'] is None:
+                    if self.StoreDict[cur_imgID][vb][self.nr.Fracture] in self.ost_fx:
+                        color = 'orange'
+                    elif self.ScoreSys.non_ost_deform != None and self.StoreDict[cur_imgID][vb][self.nr.Fracture] == self.ScoreSys.non_ost_deform:
+                        color = 'green'
+                else:
                     color = 'orange'
-                elif self.ScoreSys.non_ost_deform != None and self.StoreDict[cur_imgID][vb][nr.Fracture] == self.ScoreSys.non_ost_deform:
-                    color = 'green'
                 colors.append(color)
-                SupPostPnts.append(self.StoreDict[cur_imgID][vb][nr.SupPostCoords])
-                SupAntPnts.append(self.StoreDict[cur_imgID][vb][nr.SupAntCoords])
-                InfAntPnts.append(self.StoreDict[cur_imgID][vb][nr.InfAntCoords])
-                InfPostPnts.append(self.StoreDict[cur_imgID][vb][nr.InfPostCoords])
 
-            SupPostPnts = np.array(SupPostPnts, dtype=float)
-            SupAntPnts = np.array(SupAntPnts, dtype=float)
-            InfAntPnts = np.array(InfAntPnts, dtype=float)
-            InfPostPnts = np.array(InfPostPnts, dtype=float)
+                for i, name in enumerate(self.configs['bounding_polygon_vertices_names']):
+                    vertices[i].append(self.StoreDict[cur_imgID][vb][name])
+            for i in range(len(vertices)):
+                vertices[i] = np.array(vertices[i], dtype=float)
    
             if self.points_off_on_status == 2: 
-                self.axes.scatter(
-                    SupPostPnts[:,0], SupPostPnts[:,1], s=marker_size, color=colors, marker='+')
-                self.axes.scatter(
-                    SupAntPnts[:,0], SupAntPnts[:,1], s=marker_size, color=colors, marker='*')
-                self.axes.scatter(
-                    InfAntPnts[:,0], InfAntPnts[:,1], s=marker_size, color=colors, marker='.')
-                self.axes.scatter(
-                    InfPostPnts[:,0], InfPostPnts[:,1], s=marker_size, color=colors, marker='X')
+                for i, marker in enumerate(self.configs['bounding_polygon_vertices_shape']):
+                    self.axes.scatter(
+                        vertices[i][:,0], vertices[i][:,1], s=marker_size, color=colors, marker=marker)
 
-                allPnts = np.concatenate([SupPostPnts, SupAntPnts, InfAntPnts, InfPostPnts], axis = 0)
+                allPnts = np.concatenate(vertices, axis = 0)
                 text_in_data = self.axes.transData.transform(allPnts)
                 text_in_data[:,0] += text_x_offset
                 text_in_data[:,1] += text_y_offset
@@ -359,20 +367,12 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                     transform(text_in_data)
                 vb_offset = len(self.VBLabelList)
                 for i, vb in enumerate(self.VBLabelList):
-                    if (not np.isnan(text_in_data_coords[i,0])) and (not np.isnan(text_in_data_coords[i,1])):
-                        self.axes.text(
-                            text_in_data_coords[i,0], text_in_data_coords[i,1], vb, color=colors[i], fontsize=text_font)
-                    if (not np.isnan(text_in_data_coords[i+vb_offset,0])) and (not np.isnan(text_in_data_coords[i+vb_offset,1])):
-                        self.axes.text(
-                            text_in_data_coords[i+vb_offset,0], text_in_data_coords[i+vb_offset,1], vb, color=colors[i], fontsize=text_font)
-                    if (not np.isnan(text_in_data_coords[i+2*vb_offset,0])) and (not np.isnan(text_in_data_coords[i+2*vb_offset,1])):
-                        self.axes.text(
-                            text_in_data_coords[i+2*vb_offset,0], text_in_data_coords[i+2*vb_offset,1], vb, color=colors[i], fontsize=text_font)
-                    if (not np.isnan(text_in_data_coords[i+3*vb_offset,0])) and (not np.isnan(text_in_data_coords[i+3*vb_offset,1])):
-                        self.axes.text(
-                            text_in_data_coords[i+3*vb_offset,0], text_in_data_coords[i+3*vb_offset,1], vb, color=colors[i], fontsize=text_font)
+                    for j, coords in enumerate(self.configs['bounding_polygon_vertices_names']):
+                        if (not np.isnan(text_in_data_coords[i+j*vb_offset,0])) and (not np.isnan(text_in_data_coords[i+j*vb_offset,1])):
+                            self.axes.text(
+                                text_in_data_coords[i+j*vb_offset,0], text_in_data_coords[i+j*vb_offset,1], vb, color=colors[i], fontsize=text_font)
             elif self.points_off_on_status == 1:
-                allPnts = np.array([SupPostPnts, SupAntPnts, InfAntPnts, InfPostPnts])
+                allPnts = np.array(vertices.copy())
                 allnan_mask = np.all(np.isnan(allPnts), axis=(1,2))
                 allPnts = allPnts[~allnan_mask]
                 text_in_data_coords = np.nanmean(allPnts, axis=0)
@@ -402,49 +402,25 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         for i, vb in enumerate(self.VBLabelList):
             self.VBPointer = i
             is_set_asterisk = True # if all coords are lablled, then set an asterisk
-            if cur_sdict[vb][nr.SupPostCoords][0] != None:
-                self.cor_X_Label[0][i].setText(str(cur_sdict[vb][nr.SupPostCoords][0]))
-            else:
-                self.cor_X_Label[0][i].setText('None')
-                is_set_asterisk = False
-            if cur_sdict[vb][nr.SupPostCoords][1] != None:
-                self.cor_Y_Label[0][i].setText(str(cur_sdict[vb][nr.SupPostCoords][1]))
-            else:
-                self.cor_Y_Label[0][i].setText('None')
-                is_set_asterisk = False
-                
-            if cur_sdict[vb][nr.SupAntCoords][0] != None:
-                self.cor_X_Label[1][i].setText(str(cur_sdict[vb][nr.SupAntCoords][0]))
-            else:
-                self.cor_X_Label[1][i].setText('None')
-                is_set_asterisk = False
-            if cur_sdict[vb][nr.SupAntCoords][1] != None:
-                self.cor_Y_Label[1][i].setText(str(cur_sdict[vb][nr.SupAntCoords][1]))
-            else:
-                self.cor_Y_Label[1][i].setText('None')
-                is_set_asterisk = False
-                
-            if cur_sdict[vb][nr.InfAntCoords][0] != None:
-                self.cor_X_Label[2][i].setText(str(cur_sdict[vb][nr.InfAntCoords][0]))
-            elif vb != 'S1':
-                self.cor_X_Label[2][i].setText('None')
-                is_set_asterisk = False
-            if cur_sdict[vb][nr.InfAntCoords][1] != None:
-                self.cor_Y_Label[2][i].setText(str(cur_sdict[vb][nr.InfAntCoords][1]))
-            elif vb != 'S1':
-                self.cor_Y_Label[2][i].setText('None')
-                is_set_asterisk = False
-                
-            if cur_sdict[vb][nr.InfPostCoords][0] != None:
-                self.cor_X_Label[3][i].setText(str(cur_sdict[vb][nr.InfPostCoords][0]))
-            elif vb != 'S1':
-                self.cor_X_Label[3][i].setText('None')
-                is_set_asterisk = False
-            if cur_sdict[vb][nr.InfPostCoords][1] != None:
-                self.cor_Y_Label[3][i].setText(str(cur_sdict[vb][nr.InfPostCoords][1]))
-            elif vb != 'S1':
-                self.cor_Y_Label[3][i].setText('None')
-                is_set_asterisk = False
+            
+            index = self.configs['region_identifier_list'].index(vb)
+            co = 0
+            for j, coords in enumerate(cur_sdict[vb]):
+                if coords == self.nr.Fracture:
+                    continue
+                if co >= self.configs['bounding_polygon_type'][index]:
+                    break
+                if cur_sdict[vb][coords][0] != None:
+                    self.cor_X_Label[j][i].setText(str(cur_sdict[vb][coords][0]))
+                else:
+                    self.cor_X_Label[j][i].setText('None')
+                    is_set_asterisk = False
+                if cur_sdict[vb][coords][1] != None:
+                    self.cor_Y_Label[j][i].setText(str(cur_sdict[vb][coords][1]))
+                else:
+                    self.cor_Y_Label[j][i].setText('None')
+                    is_set_asterisk = False
+                co += 1
             
             if self.tabOrder:
                 index = i
@@ -454,21 +430,22 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                 self.table.tabBar().setTabTextColor(index, QtCore.Qt.blue)
             else:
                 self.table.tabBar().setTabTextColor(index, QtCore.Qt.black)
-            if self.HardwareStatusDict[cur_imgID][vb] == nr.hardware:
+            if self.HardwareStatusDict[cur_imgID][vb] == self.nr.hardware:
                 self.table.tabBar().setTabTextColor(index, QtCore.Qt.green)
             
-            if cur_sdict[vb][nr.Fracture] != None:
+            if cur_sdict[vb][self.nr.Fracture] != None:
                 co = 0
                 for j, label in enumerate(self.fx_labels):
                     if label != None:
-                        if cur_sdict[vb][nr.Fracture] == label:
+                        if cur_sdict[vb][self.nr.Fracture] == label:
                             self.frac_rbs[i][co].setChecked(True)
                             break
                         co += 1
             else:
                 self.frac_rbs[index][0].setChecked(True)
             
-        self.update_hardware_checkboxes()
+        if self.hardware_checkboxes[i] is not None:
+            self.update_hardware_checkboxes()
                     
         self.VBPointer = origin_imgpointer
         self.is_update_table = False
@@ -479,31 +456,30 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         """   
         cur_imgID = self.ImgIDList[self.ImgPointer]
         
-        if self.ReadableStatusDict[cur_imgID] == nr.unreadable:
+        if self.ReadableStatusDict[cur_imgID] == self.nr.unreadable:
             return
         
         cur_sdict = self.StoreDict[cur_imgID]
 
         flag = False
         for vb in self.VBLabelList:
-            if cur_sdict[vb][nr.SupPostCoords][0] != None \
-                or cur_sdict[vb][nr.SupPostCoords][1] != None \
-                or cur_sdict[vb][nr.SupAntCoords][0] != None \
-                or cur_sdict[vb][nr.SupAntCoords][1] != None \
-                or cur_sdict[vb][nr.InfAntCoords][0] != None \
-                or cur_sdict[vb][nr.InfAntCoords][1] != None \
-                or cur_sdict[vb][nr.InfPostCoords][0] != None \
-                or cur_sdict[vb][nr.InfPostCoords][1] != None \
-                or self.HardwareStatusDict[cur_imgID] == nr.hardware:
-                self.StatusDict[cur_imgID] = nr.touch
+            inner_flag = False 
+            for j, coords in enumerate(cur_sdict[vb]):
+                if coords == self.nr.Fracture:
+                    continue
+                if cur_sdict[vb][coords][0] is not None or cur_sdict[vb][coords][1] is not None:
+                    inner_flag = True
+                    break
+            if inner_flag:
+                self.StatusDict[cur_imgID] = self.nr.touch
                 flag = True
                 break
 
         if not flag:
-            self.StatusDict[cur_imgID] = nr.untouch
+            self.StatusDict[cur_imgID] = self.nr.untouch
 
         # update the status label in the UI
-        if self.StatusDict[cur_imgID] == nr.untouch:
+        if self.StatusDict[cur_imgID] == self.nr.untouch:
             status_text = 'untouched'
         else:
             status_text = 'touched'
@@ -511,15 +487,15 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         # update the num_labelled label in the UI
         num_u = 0
         for ID in self.ImgIDList:
-            if self.StatusDict[ID] == nr.untouch:
+            if self.StatusDict[ID] == self.nr.untouch:
                 num_u += 1
         self.num_labelled_label.setText('Untouched/Total: '+str(num_u)+'/'+str(len(self.ImgIDList)-self.num_unreadable))
         self.ImgeID_label.setText('Image '+str(self.ImgPointer+1)+':\n'+self.ImgIDList[self.ImgPointer])
 
         # updaet last modifier label
         text = 'Last Modifier: '
-        if self.ControversialDict[cur_imgID][nr.Modifier] != None:
-            text += self.ControversialDict[cur_imgID][nr.Modifier] 
+        if self.ControversialDict[cur_imgID][self.nr.Modifier] != None:
+            text += self.ControversialDict[cur_imgID][self.nr.Modifier] 
         else:
             text += 'None'
         self.modifier_label.setText(text)
@@ -530,7 +506,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         '''
         cur_imgID = self.ImgIDList[self.ImgPointer]
         # update controversial label
-        if self.ControversialDict[cur_imgID][nr.ConStatus] == nr.controversial:
+        if self.ControversialDict[cur_imgID][self.nr.ConStatus] == self.nr.controversial:
             self.controversial_label.setText('Do you want to unflag the image?')
             self.setcon_button.setEnabled(False)
             self.resetcon_button.setEnabled(True)
@@ -542,8 +518,8 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
             self.controversial_label.setStyleSheet('color: black')
             
         # updaet comment label
-        if self.ControversialDict[cur_imgID][nr.ConPart] != '':
-            self.comment_label.setText('Comments:\n'+ self.ControversialDict[cur_imgID][nr.ConPart])
+        if self.ControversialDict[cur_imgID][self.nr.ConPart] != '':
+            self.comment_label.setText('Comments:\n'+ self.ControversialDict[cur_imgID][self.nr.ConPart])
         else:
             self.comment_label.setText('\n\n\n\n')
         # update textbox
@@ -558,21 +534,19 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         cur_vb = self.VBLabelList[self.VBPointer]
         self.CoordType = self.CoordTypeList[0]
         self.coords_tables[self.VBPointer].setCurrentIndex(0)
-        if cur_sdict[cur_vb][nr.SupPostCoords][0] == None or cur_sdict[cur_vb][nr.SupPostCoords][1] == None:
-            self.CoordType = self.CoordTypeList[0]
-            self.coords_tables[self.VBPointer].setCurrentIndex(0)
-        elif cur_sdict[cur_vb][nr.SupAntCoords][0] == None or cur_sdict[cur_vb][nr.SupAntCoords][1] == None:
-            self.CoordType = self.CoordTypeList[1]
-            self.coords_tables[self.VBPointer].setCurrentIndex(1)
-        elif cur_vb != 'S1' \
-        and (cur_sdict[cur_vb][nr.InfAntCoords][0] == None or cur_sdict[cur_vb][nr.InfAntCoords][1] == None):
-            self.CoordType = self.CoordTypeList[2]
-            self.coords_tables[self.VBPointer].setCurrentIndex(2)
-        elif cur_vb != 'S1' \
-        and (cur_sdict[cur_vb][nr.InfPostCoords][0] == None or cur_sdict[cur_vb][nr.InfPostCoords][1] == None):
-            self.CoordType = self.CoordTypeList[3]
-            self.coords_tables[self.VBPointer].setCurrentIndex(3)
-                    
+        index = self.configs['region_identifier_list'].index(cur_vb)
+        co = 0
+        for i, coords in enumerate(cur_sdict[cur_vb]):
+            if coords == self.nr.Fracture:
+                continue
+            if co >= self.configs['bounding_polygon_type'][index]:
+                break
+            if cur_sdict[cur_vb][coords][0] == None or coords[1] == None:
+                self.CoordType = self.CoordTypeList[i]
+                self.coords_tables[self.VBPointer].setCurrentIndex(i)
+                break
+            co += 1
+ 
     def update_frac_vb_label(self):
         """
         update fracture VB lable
@@ -584,12 +558,15 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         text_normal = ''
         text_nonost = ''
         for i, vb in enumerate(self.VBLabelList):
-            if cur_sdict[vb][nr.Fracture] in self.ost_fx:
-                text_ost += vb + ' '
-            elif cur_sdict[vb][nr.Fracture] == self.ScoreSys.normal:
+            if cur_sdict[vb][self.nr.Fracture] == self.ScoreSys.default:
                 text_normal += vb + ' '
-            elif self.ScoreSys.non_ost_deform != None and cur_sdict[vb][nr.Fracture] == self.ScoreSys.non_ost_deform:
-                text_nonost += vb + ' '
+            elif self.configs['region_labels']['radiobuttons'] is None:
+                if cur_sdict[vb][self.nr.Fracture] in self.ost_fx:
+                    text_ost += vb + ' '
+                elif self.ScoreSys.non_ost_deform != None and cur_sdict[vb][self.nr.Fracture] == self.ScoreSys.non_ost_deform:
+                    text_nonost += vb + ' '
+            else:
+                text_ost += vb + ' '
         self.frac_vb_label.setText(text_ost)
         self.normal_vb_label.setText(text_normal)
         if self.ScoreSys.non_ost_deform != None:
@@ -599,7 +576,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         '''
         update save status label
         '''
-        if self.save_status == nr.saved:
+        if self.save_status == self.nr.saved:
             color = 'black'
         else:
             color = 'red'
@@ -619,9 +596,9 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
             else:
                 index = len(self.VBLabelList) - 1 - i
             if self.HardwareStatusDict[cur_imgID][vb] != None:
-                if self.HardwareStatusDict[cur_imgID][vb] == nr.nohardware:
+                if self.HardwareStatusDict[cur_imgID][vb] == self.nr.nohardware:
                     self.hardware_checkboxes[index].setChecked(False)
-                elif self.HardwareStatusDict[cur_imgID][vb] == nr.hardware:
+                elif self.HardwareStatusDict[cur_imgID][vb] == self.nr.hardware:
                     self.hardware_checkboxes[index].setChecked(True)
         self.count += 1
         self.is_update_hw_cbx = False
@@ -633,22 +610,26 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.is_update_ost_label = True
         cur_imgID = self.ImgIDList[self.ImgPointer]
         flag = False
-        for i, category in enumerate(nr.OstLabels):
+        for i, category in enumerate(self.configs['image_label']):
             if self.OstLabelingDict[cur_imgID] == category:
                 self.ost_radiobuttons[i].setChecked(True)
                 flag = True
                 break
         if not flag:
-            self.ost_group.setExclusive(False)
-            for radiobutton in self.ost_radiobuttons:
-                radiobutton.setChecked(False)
-            self.ost_group.setExclusive(True)
+            if self.configs['default_image_label'] is None:
+                self.ost_group.setExclusive(False)
+                for radiobutton in self.ost_radiobuttons:
+                    radiobutton.setChecked(False)
+                self.ost_group.setExclusive(True)
+            else:
+                default_index = self.configs['image_label'].index(self.configs['default_image_label'])
+                self.ost_radiobuttons[default_index].setChecked(True)
             
-        # if self.OstLabelingDict[cur_imgID] == nr.hasNoOst:
+        # if self.OstLabelingDict[cur_imgID] == self.nr.hasNoOst:
         #     self.ost_radiobuttons1.setChecked(True)
-        # elif self.OstLabelingDict[cur_imgID] == nr.hasOst:
+        # elif self.OstLabelingDict[cur_imgID] == self.nr.hasOst:
         #     self.ost_radiobuttons2.setChecked(True)
-        # elif self.OstLabelingDict[cur_imgID] == nr.unsureOst:
+        # elif self.OstLabelingDict[cur_imgID] == self.nr.unsureOst:
         #     self.ost_radiobuttons3.setChecked(True)
         # else:
         #     self.ost_group.setExclusive(False)
@@ -678,25 +659,27 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         with open(self.taborder_temp_file,  'w+') as file:
             file.write(str(self.tabOrder))
         
-        self.fx_score_sys = nr.candidateScoringSys[self.score_sys_select.currentIndex()]
-        with open(self.scoresys_temp_file,  'w+') as file:
-            file.write(self.fx_score_sys)
-            
-        self.ScoreSys = ScoringSysDef(self.fx_score_sys)
+        if self.configs['region_labels']['radiobuttons'] is None:
+            self.fx_score_sys = self.nr.candidateScoringSys[self.score_sys_select.currentIndex()]
+            with open(self.scoresys_temp_file,  'w+') as file:
+                file.write(self.fx_score_sys)
+            self.ScoreSys = ScoringSysDef(self.fx_score_sys, self.configs)
+            self.ost_fx = self.ScoreSys.OstFxLabels
+        else:
+            self.ScoreSys = ScoringSysDef('custom', self.configs)
         self.fx_labels = self.ScoreSys.FxScoreSysLabels
-        self.ost_fx = self.ScoreSys.OstFxLabels
         # construct the backend storing dicts, etc
         self.dict_constructor()
         
         for ID in self.ImgIDList:
-            if self.ReadableStatusDict[ID] == nr.unreadable:
+            if self.ReadableStatusDict[ID] == self.nr.unreadable:
                 self.num_unreadable += 1
 
         # The first image that will be shown
         # self.ImgPointer is always pointing to the image that is shown currently
         self.ImgPointer = 0
         for i, ID in enumerate(self.ImgIDList):
-            if self.ReadableStatusDict[ID] == nr.readable:
+            if self.ReadableStatusDict[ID] == self.nr.readable:
                     self.ImgPointer = i
                     break
                 
@@ -704,7 +687,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
             self.ImgPointer = self.begin
         else:
             for index, ID in enumerate(self.ImgIDList):
-                if self.StatusDict[ID] == nr.untouch and self.ReadableStatusDict[ID] == nr.readable:
+                if self.StatusDict[ID] == self.nr.untouch and self.ReadableStatusDict[ID] == self.nr.readable:
                     self.ImgPointer = index
                     break
 
@@ -714,7 +697,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.press = None
         self.non_canvas_key_flag = False
         
-        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == nr.untouch:
+        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == self.nr.untouch:
             self.time_log_flag = True
         else:
             self.time_log_flag = False
@@ -775,25 +758,25 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
    
     @ unsave_decor
     def _readable_dialog_yes_button_on_click(self,button):
-        self.ReadableStatusDict[self.ImgIDList[self.ImgPointer]] = nr.unreadable
+        self.ReadableStatusDict[self.ImgIDList[self.ImgPointer]] = self.nr.unreadable
         self.num_unreadable += 1
-        self.StatusDict[self.ImgIDList[self.ImgPointer]] = nr.touch
-        self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.Modifier] = self.username
-        self.modifier_label.setText('Last Modifier: '+self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.Modifier])
+        self.StatusDict[self.ImgIDList[self.ImgPointer]] = self.nr.touch
+        self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.Modifier] = self.username
+        self.modifier_label.setText('Last Modifier: '+self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.Modifier])
         self.next_button_on_click()
         self.readable_dialog.close()
 
     # the function of flip the image button
     @ unsave_decor
     def flip_image_button_on_click(self, button):
-        if self.mode == nr.edit:
+        if self.mode == self.nr.edit:
             cur_image = self.ImgIDList[self.ImgPointer]
-            self.ControversialDict[cur_image][nr.Modifier] = self.username
-            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_image][nr.Modifier])
-            if self.OrientationDict[cur_image] == nr.face_user_right:
-                self.OrientationDict[cur_image] = nr.face_user_left
+            self.ControversialDict[cur_image][self.nr.Modifier] = self.username
+            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_image][self.nr.Modifier])
+            if self.OrientationDict[cur_image] == self.nr.face_user_right:
+                self.OrientationDict[cur_image] = self.nr.face_user_left
             else:
-                self.OrientationDict[cur_image] = nr.face_user_right
+                self.OrientationDict[cur_image] = self.nr.face_user_right
             self.npa = np.fliplr(self.npa)
             self._hflip_corner_points()
             self.update_display()
@@ -801,36 +784,32 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     def _hflip_corner_points(self):
         cur_image = self.ImgIDList[self.ImgPointer]
         image_width = self.npa.shape[1]
+        cur_dict = self.StoreDict[cur_image]
         for vb in self.VBLabelList:
-            if self.StoreDict[cur_image][vb][nr.SupPostCoords] != (None, None):
-                temp = image_width - self.StoreDict[cur_image][vb][nr.SupPostCoords][0]
-                self.StoreDict[cur_image][vb][nr.SupPostCoords] =\
-                    (temp, self.StoreDict[cur_image][vb][nr.SupPostCoords][1])
-            if self.StoreDict[cur_image][vb][nr.SupAntCoords] != (None, None):
-                temp = image_width - self.StoreDict[cur_image][vb][nr.SupAntCoords][0]
-                self.StoreDict[cur_image][vb][nr.SupAntCoords] =\
-                    (temp, self.StoreDict[cur_image][vb][nr.SupAntCoords][1])
-            if vb != 'S1' and self.StoreDict[cur_image][vb][nr.InfAntCoords] != (None, None):
-                temp = image_width - self.StoreDict[cur_image][vb][nr.InfAntCoords][0]
-                self.StoreDict[cur_image][vb][nr.InfAntCoords] =\
-                    (temp, self.StoreDict[cur_image][vb][nr.InfAntCoords][1])
-            if vb != 'S1' and self.StoreDict[cur_image][vb][nr.InfPostCoords] != (None, None):
-                temp = image_width - self.StoreDict[cur_image][vb][nr.InfPostCoords][0]
-                self.StoreDict[cur_image][vb][nr.InfPostCoords] =\
-                    (temp, self.StoreDict[cur_image][vb][nr.InfPostCoords][1])
+            index = self.configs['region_identifier_list'].index(vb)
+            co = 0
+            for i, coords in enumerate(cur_dict[vb]):
+                if coords == self.nr.Fracture:
+                    continue
+                if co >= self.configs['bounding_polygon_type'][index]:
+                    break
+                if cur_dict[vb][coords] != (None, None):
+                    temp = image_width - cur_dict[vb][coords][0]
+                    cur_dict[vb][coords] = (temp, cur_dict[vb][coords][1])
+                co += 1
 
     # the function of comment_submit_button
     @ unsave_decor
     def comment_button_on_click(self, button):
         text = self.username + '\'s idea: ' + self.comment_textbox.toPlainText() + '\n'
-        self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.ConPart] += text
-        self.comment_label.setText('Comments:\n'+self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.ConPart])
+        self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.ConPart] += text
+        self.comment_label.setText('Comments:\n'+self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.ConPart])
         self.comment_textbox.setText('')
 
     # the function of setcon_button
     @ unsave_decor
     def setcon_button_on_click(self, button):
-        self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.ConStatus] = nr.controversial
+        self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.ConStatus] = self.nr.controversial
         self.controversial_label.setText('Do you want to unflag the image?')
         self.setcon_button.setEnabled(False)
         self.resetcon_button.setEnabled(True)
@@ -839,7 +818,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # the function of setcon_button
     @ unsave_decor
     def resetcon_button_on_click(self, button):
-        self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.ConStatus] = nr.uncontroversial
+        self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.ConStatus] = self.nr.uncontroversial
         self.controversial_label.setText('Do you want to flag the image?    ')
         self.setcon_button.setEnabled(True)
         self.resetcon_button.setEnabled(False)
@@ -848,7 +827,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # the function of comment clear button
     @ unsave_decor
     def comment_clear_button_on_click(self,button):
-        self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.ConPart] = ''
+        self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.ConPart] = ''
         self.comment_label.setText('\n\n\n\n')
 
     # The function of prevcon button
@@ -857,7 +836,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         flag = False
         for i in range(1,len(self.ImgIDList)):
             index = (self.ImgPointer - i) % len(self.ImgIDList)
-            if(self.ControversialDict[self.ImgIDList[index]][nr.ConStatus] == nr.controversial):
+            if(self.ControversialDict[self.ImgIDList[index]][self.nr.ConStatus] == self.nr.controversial):
                 flag = True
                 break
         if flag:
@@ -871,7 +850,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         flag = False
         for i in range(1,len(self.ImgIDList)):
             index = (self.ImgPointer + i) % len(self.ImgIDList)
-            if(self.ControversialDict[self.ImgIDList[index]][nr.ConStatus] == nr.controversial):
+            if(self.ControversialDict[self.ImgIDList[index]][self.nr.ConStatus] == self.nr.controversial):
                 flag = True
                 break
         if flag:
@@ -890,7 +869,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.ImgPointer = (self.ImgPointer - 1) % len(self.ImgIDList)
         self.last_labeled = None
         
-        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == nr.untouch:
+        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == self.nr.untouch:
             self.time_log_flag = True
         else:
             self.time_log_flag = False
@@ -906,7 +885,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         self.save()
         self.ImgPointer = (self.ImgPointer + 1) % len(self.ImgIDList)
         self.last_labeled = None
-        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == nr.untouch:
+        if self.StatusDict[self.ImgIDList[self.ImgPointer]] == self.nr.untouch:
             self.time_log_flag = True
         else:
             self.time_log_flag = False
@@ -923,7 +902,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         flag = False
         for i in range(1,len(self.ImgIDList)):
             index = (self.ImgPointer - i) % len(self.ImgIDList)
-            if(self.StatusDict[self.ImgIDList[index]] == nr.untouch):
+            if(self.StatusDict[self.ImgIDList[index]] == self.nr.untouch):
                 flag = True
                 break
         if flag:
@@ -943,7 +922,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         flag = False
         for i in range(1,len(self.ImgIDList)):
             index = (self.ImgPointer + i) % len(self.ImgIDList)
-            if(self.StatusDict[self.ImgIDList[index]] == nr.untouch):
+            if(self.StatusDict[self.ImgIDList[index]] == self.nr.untouch):
                 flag = True
                 break
         if flag:
@@ -954,17 +933,17 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # The function of clearall button: clear all the info of current image
     @ unsave_decor
     def clear_all_button_on_click(self, button):
-        if self.mode != nr.edit or self.points_off_on_status != 2:
+        if self.mode != self.nr.edit or self.points_off_on_status != 2:
             return
         cur_imgID = self.ImgIDList[self.ImgPointer]
-        self.ControversialDict[cur_imgID][nr.Modifier] = self.username
+        self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
         for i, vb in enumerate(self.VBLabelList):
-            self.StoreDict[cur_imgID][vb][nr.SupPostCoords] = (None,None)
-            self.StoreDict[cur_imgID][vb][nr.SupAntCoords] = (None,None)
-            self.StoreDict[cur_imgID][vb][nr.InfAntCoords] = (None,None)
-            self.StoreDict[cur_imgID][vb][nr.InfPostCoords] = (None,None)
-            self.StoreDict[cur_imgID][vb][nr.Fracture] = self.ScoreSys.normal
-            self.HardwareStatusDict[cur_imgID][vb] = nr.nohardware
+            for j, coords in enumerate(self.StoreDict[cur_imgID][vb]):
+                if coords == self.nr.Fracture:
+                    continue
+                self.StoreDict[cur_imgID][vb][coords] = (None, None)
+            self.StoreDict[cur_imgID][vb][self.nr.Fracture] = self.ScoreSys.default
+            self.HardwareStatusDict[cur_imgID][vb] = self.nr.nohardware
         self.OstLabelingDict[cur_imgID] = None
         self.update_status()
         self.update_display()
@@ -1007,7 +986,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # The function of save button: save current StoreDict and StatusDict into the csv file
     def save(self):
         # store labeled stats
-        csv_cols = nr.csv_headers
+        csv_cols = self.nr.csv_headers
         with open(self.fpath, 'w') as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=csv_cols)
             writer.writeheader()
@@ -1015,9 +994,9 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
             for ID in self.ImgIDList:
                 status = self.StatusDict[ID]
                 VB_dict = self.StoreDict[ID]
-                mod = self.ControversialDict[ID][nr.Modifier]
-                con_status = self.ControversialDict[ID][nr.ConStatus]
-                con_part = self.ControversialDict[ID][nr.ConPart]
+                mod = self.ControversialDict[ID][self.nr.Modifier]
+                con_status = self.ControversialDict[ID][self.nr.ConStatus]
+                con_part = self.ControversialDict[ID][self.nr.ConPart]
                 readable = self.ReadableStatusDict[ID]
                 orientation = self.OrientationDict[ID]
                 ost_labeling = self.OstLabelingDict[ID]
@@ -1025,58 +1004,51 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                 max_intensity = self.WindowLevelDict[ID][1]
                 inverse_gray = str(self.InverseGrayDict[ID])
                 for i, vb in enumerate(self.VBLabelList):          
-                    SupPost_x = VB_dict[vb][nr.SupPostCoords][0]
-                    SupPost_y = VB_dict[vb][nr.SupPostCoords][1]
-                    SupAnt_x = VB_dict[vb][nr.SupAntCoords][0]
-                    SupAnt_y = VB_dict[vb][nr.SupAntCoords][1]
-                    InfAnt_x = VB_dict[vb][nr.InfAntCoords][0]
-                    InfAnt_y = VB_dict[vb][nr.InfAntCoords][1]
-                    InfPost_x = VB_dict[vb][nr.InfPostCoords][0]
-                    InfPost_y = VB_dict[vb][nr.InfPostCoords][1]
-                    hardware = self.HardwareStatusDict[ID][vb]
-                    
-                    f = VB_dict[vb][nr.Fracture]
+                    f = VB_dict[vb][self.nr.Fracture]
                     csv_dict = {
-                                nr.head_imgID: ID,
-                                nr.head_status: status,
-                                nr.head_vbLabel: vb,
-                                nr.head_SupPostX: SupPost_x, nr.head_SupPostY: SupPost_y,
-                                nr.head_SupAntX: SupAnt_x, nr.head_SupAntY: SupAnt_y,
-                                nr.head_InfAntX: InfAnt_x, nr.head_InfAntY: InfAnt_y,
-                                nr.head_InfPostX: InfPost_x, nr.head_InfPostY: InfPost_y,                        
-                                nr.head_frac:f,
-                                nr.head_modifier: mod,
-                                nr.head_conStatus: con_status,
-                                nr.head_conParts: con_part,
-                                nr.head_readableStatus: readable,
-                                nr.head_hardwareStatus: hardware,
-                                nr.head_orientation: orientation,
-                                nr.head_ostLabeling: ost_labeling,
-                                nr.head_min_intensity:min_intensity,
-                                nr.head_max_intensity:max_intensity,
-                                nr.head_inverse_gray: inverse_gray
+                                self.nr.head_imgID: ID,
+                                self.nr.head_status: status,
+                                self.nr.head_vbLabel: vb,
+                                self.nr.head_frac:f,
+                                self.nr.head_modifier: mod,
+                                self.nr.head_conStatus: con_status,
+                                self.nr.head_conParts: con_part,
+                                self.nr.head_readableStatus: readable,
+                                self.nr.head_orientation: orientation,
+                                self.nr.head_ostLabeling: ost_labeling,
+                                self.nr.head_min_intensity:min_intensity,
+                                self.nr.head_max_intensity:max_intensity,
+                                self.nr.head_inverse_gray: inverse_gray
                                 }
+                    if self.configs['region_labels']['checkbox'] is not None:
+                        hardware = self.HardwareStatusDict[ID][vb]
+                        csv_dict[self.nr.head_hardwareStatus] = hardware
+                    for j, coord_header in enumerate(self.nr.head_vertices):
+                        index1 = int(j // 2)
+                        name_key = self.configs['bounding_polygon_vertices_names'][index1]
+                        index2 = int(j % 2)
+                        csv_dict[coord_header] = VB_dict[vb][name_key][index2]
                     writer.writerow(csv_dict)        
         
-        self.save_status = nr.saved
+        self.save_status = self.nr.saved
         self.update_save_status_label()
 
     # What happen when the status of mode radiobuttons is changing
     ## main function
     def mode_radiobuttons_on_change(self, change):
         cur_image = self.ImgIDList[self.ImgPointer]
-        last_modifier = self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.Modifier]
+        last_modifier = self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.Modifier]
         if self.mode == change.text():
             return
-        if change.text() == nr.edit:
-            self.mode = nr.edit
+        if change.text() == self.nr.edit:
+            self.mode = self.nr.edit
             self._batch_widgets_enabled(True)
-            if self.ControversialDict[cur_image][nr.Modifier] != None and  self.ControversialDict[cur_image][nr.Modifier] != self.username:
-                self.ControversialDict[cur_image][nr.Modifier] = self.username
+            if self.ControversialDict[cur_image][self.nr.Modifier] != None and  self.ControversialDict[cur_image][self.nr.Modifier] != self.username:
+                self.ControversialDict[cur_image][self.nr.Modifier] = self.username
                 self._modify_assure_dialog(last_modifier)
-                self.modifier_label.setText('Last Modifier: '+self.ControversialDict[self.ImgIDList[self.ImgPointer]][nr.Modifier])
+                self.modifier_label.setText('Last Modifier: '+self.ControversialDict[self.ImgIDList[self.ImgPointer]][self.nr.Modifier])
         else:
-            self.mode = nr.view
+            self.mode = self.nr.view
             self._batch_widgets_enabled(False)
     ## the dialog to let people make sure that s/he really want to modify
     def _modify_assure_dialog(self, last_modifier):
@@ -1098,7 +1070,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     ## the function of no button in the modify dialog
     def _dialog_no_button_on_click(self,last_modifier):
         cur_image = self.ImgIDList[self.ImgPointer]
-        self.ControversialDict[cur_image][nr.Modifier] = last_modifier
+        self.ControversialDict[cur_image][self.nr.Modifier] = last_modifier
         self.mode_radiobuttons2.setChecked(True)
         self._batch_widgets_enabled(False)
         self.modify_dialog.close()
@@ -1120,7 +1092,9 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         # self.ost_radiobuttons2.setEnabled(isEnabled)
         # self.ost_radiobuttons3.setEnabled(isEnabled)
         for i in range(len(self.VBLabelList)):
-            self.hardware_checkboxes[i].setEnabled(isEnabled)
+
+            if self.hardware_checkboxes[i] is not None:
+                self.hardware_checkboxes[i].setEnabled(isEnabled)
             co = 0
             for j,l in enumerate(self.fx_labels):
                 if l != None:
@@ -1153,20 +1127,14 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # The function of clear activated point buttons
     @ unsave_decor
     def clear_button_on_click(self, button):
-        if self.mode != nr.edit or self.points_off_on_status != 2:
+        if self.mode != self.nr.edit or self.points_off_on_status != 2:
             return
         cur_imgID = self.ImgIDList[self.ImgPointer]
         cur_VB = self.VBLabelList[self.VBPointer]
 
-        self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-        if self.CoordType == self.CoordTypeList[0]:
-            self.StoreDict[cur_imgID][cur_VB][nr.SupPostCoords] = (None,None)
-        elif self.CoordType == self.CoordTypeList[1]:
-            self.StoreDict[cur_imgID][cur_VB][nr.SupAntCoords] = (None,None)
-        elif self.CoordType == self.CoordTypeList[2]:
-            self.StoreDict[cur_imgID][cur_VB][nr.InfAntCoords] = (None,None)
-        elif self.CoordType == self.CoordTypeList[3]:
-            self.StoreDict[cur_imgID][cur_VB][nr.InfPostCoords] = (None,None)
+        self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+
+        self.StoreDict[cur_imgID][cur_VB][self.CoordType] = (None, None)
 
         self.update_status()
         self.update_display()
@@ -1175,16 +1143,17 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # function of clear coords btns in the table tabs
     @ unsave_decor
     def clear_coords_btns_on_click(self, button):
-        if self.mode != nr.edit or self.points_off_on_status != 2:
+        if self.mode != self.nr.edit or self.points_off_on_status != 2:
             return
         cur_imgID = self.ImgIDList[self.ImgPointer]
         cur_VB = self.VBLabelList[self.VBPointer]
 
-        self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-        self.StoreDict[cur_imgID][cur_VB][nr.SupPostCoords] = (None,None)
-        self.StoreDict[cur_imgID][cur_VB][nr.SupAntCoords] = (None,None)
-        self.StoreDict[cur_imgID][cur_VB][nr.InfAntCoords] = (None,None)
-        self.StoreDict[cur_imgID][cur_VB][nr.InfPostCoords] = (None,None)
+        self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+
+        for j, coords in enumerate(self.StoreDict[cur_imgID][cur_VB]):
+            if coords == self.nr.Fracture:
+                continue
+            self.StoreDict[cur_imgID][cur_VB][coords] = (None, None)
 
         self.update_status()
         self.update_display()
@@ -1197,21 +1166,14 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # function of clear last btns in the table tabs
     @ unsave_decor
     def clear_last_btns_on_click(self, button):
-        if self.mode != nr.edit or self.last_labeled == None or self.points_off_on_status != 2:
+        if self.mode != self.nr.edit or self.last_labeled == None or self.points_off_on_status != 2:
             return
         cur_imgID = self.ImgIDList[self.ImgPointer]
         last_VB = self.last_labeled[0]
         last_cor = self.last_labeled[1]
 
-        self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-        if last_cor == nr.CoordTypeList[0]:
-            self.StoreDict[cur_imgID][last_VB][nr.SupPostCoords] = (None,None)
-        elif last_cor == nr.CoordTypeList[1]:
-            self.StoreDict[cur_imgID][last_VB][nr.SupAntCoords] = (None,None)
-        elif last_cor == nr.CoordTypeList[2]:
-            self.StoreDict[cur_imgID][last_VB][nr.InfAntCoords] = (None,None)
-        elif last_cor == nr.CoordTypeList[3]:
-            self.StoreDict[cur_imgID][last_VB][nr.InfPostCoords] = (None,None)
+        self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+        self.StoreDict[cur_imgID][last_VB][last_cor] = (None, None)
         
         if self.tabOrder:
             self.table.setCurrentIndex(self.VBLabelList.index(last_VB))
@@ -1249,17 +1211,17 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         # the first time change.text() = previous button text, because it's unchecked
         # the second time change.text() = changed button text, because it's checked
         # we need to judge whether it's first called or second called
-        original_frac = self.StoreDict[cur_imgID][cur_VB][nr.Fracture]
+        original_frac = self.StoreDict[cur_imgID][cur_VB][self.nr.Fracture]
         if original_frac != change.text():
-            self.StoreDict[cur_imgID][cur_VB][nr.Fracture] = change.text()
+            self.StoreDict[cur_imgID][cur_VB][self.nr.Fracture] = change.text()
             self.update_display()
             self.update_frac_vb_label()
 
         if original_frac != change.text() and not self.init_display_flag:
-            self.save_status = nr.unsaved
+            self.save_status = self.nr.unsaved
             self.update_save_status_label()
-            self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_imgID][nr.Modifier])
+            self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_imgID][self.nr.Modifier])
            
     # What happen when coords tabs on change (i.e., the activated VB changes)
     def on_coords_tab_change(self, change):
@@ -1268,27 +1230,27 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     # trigger with the hardware checkbox
     @ unsave_decor
     def hardware_checkbox_state_change(self, state):
-        if self.mode != nr.edit:
+        if self.mode != self.nr.edit:
             return
         cur_image = self.ImgIDList[self.ImgPointer]
         if not self.init_display_flag:
             if state == QtCore.Qt.Checked:
-                self.HardwareStatusDict[cur_image][self.VBLabelList[self.VBPointer]] = nr.hardware
+                self.HardwareStatusDict[cur_image][self.VBLabelList[self.VBPointer]] = self.nr.hardware
             else:
-                self.HardwareStatusDict[cur_image][self.VBLabelList[self.VBPointer]] = nr.nohardware
+                self.HardwareStatusDict[cur_image][self.VBLabelList[self.VBPointer]] = self.nr.nohardware
             
             self.update_table()
             # self.update_hardware_checkboxes()
-            self.ControversialDict[cur_image][nr.Modifier] = self.username
-            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_image][nr.Modifier])
+            self.ControversialDict[cur_image][self.nr.Modifier] = self.username
+            self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_image][self.nr.Modifier])
 
 
     # ost radiobuttons on change
     def ost_rb_on_change(self, change):
         cur_imgID = self.ImgIDList[self.ImgPointer]
-        if self.mode != nr.edit:
+        if self.mode != self.nr.edit:
             flag = False
-            for i, category in enumerate(nr.OstLabels):
+            for i, category in enumerate(self.nr.OstLabels):
                 if self.OstLabelingDict[cur_imgID] == category:
                     self.ost_radiobuttons[i].setChecked(True)
                     flag = True
@@ -1298,11 +1260,11 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                 for radiobutton in self.ost_radiobuttons:
                     radiobutton.setChecked(False)
                 self.ost_group.setExclusive(True)
-            # if self.OstLabelingDict[cur_imgID] == nr.hasNoOst:
+            # if self.OstLabelingDict[cur_imgID] == self.nr.hasNoOst:
             #     self.ost_radiobuttons1.setChecked(True)
-            # elif self.OstLabelingDict[cur_imgID] == nr.hasOst:
+            # elif self.OstLabelingDict[cur_imgID] == self.nr.hasOst:
             #     self.ost_radiobuttons2.setChecked(True)
-            # elif self.OstLabelingDict[cur_imgID] == nr.unsureOst:
+            # elif self.OstLabelingDict[cur_imgID] == self.nr.unsureOst:
             #     self.ost_radiobuttons3.setChecked(True)
             # else:
             #     self.ost_group.setExclusive(False)
@@ -1321,10 +1283,10 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                 self.OstLabelingDict[cur_imgID] = change.text()
 
             if original_ost != change.text() and not self.init_display_flag:
-                self.save_status = nr.unsaved
+                self.save_status = self.nr.unsaved
                 self.update_save_status_label()
-                self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-                self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_imgID][nr.Modifier])
+                self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+                self.modifier_label.setText('Last Modifier: '+self.ControversialDict[cur_imgID][self.nr.Modifier])
 
     def image_click(self, event):
         """
@@ -1334,7 +1296,7 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
         if event.inaxes==self.axes:
             if event.button == 1:
                 if not event.dblclick:
-                    if not self.block_points and self.mode == nr.edit and self.points_off_on_status == 2:
+                    if not self.block_points and self.mode == self.nr.edit and self.points_off_on_status == 2:
                         last_time = self.now
                         self.now = time.time()
                         if self.time_log_flag:
@@ -1343,50 +1305,48 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
                         
                         cur_imgID = self.ImgIDList[self.ImgPointer]
                         cur_VB = self.VBLabelList[self.VBPointer]
-                        self.ControversialDict[cur_imgID][nr.Modifier] = self.username
-                        if self.CoordType == self.CoordTypeList[0]:
-                            self.StoreDict[cur_imgID][cur_VB][nr.SupPostCoords] = (event.xdata, event.ydata)
-                        elif self.CoordType == self.CoordTypeList[1]:
-                            self.StoreDict[cur_imgID][cur_VB][nr.SupAntCoords] = (event.xdata, event.ydata)
-                        elif self.CoordType == self.CoordTypeList[2]:
-                            self.StoreDict[cur_imgID][cur_VB][nr.InfAntCoords] = (event.xdata, event.ydata)
-                        elif self.CoordType == self.CoordTypeList[3]:
-                            self.StoreDict[cur_imgID][cur_VB][nr.InfPostCoords] = (event.xdata, event.ydata)
+                        self.ControversialDict[cur_imgID][self.nr.Modifier] = self.username
+
+                        self.StoreDict[cur_imgID][cur_VB][self.CoordType] = (event.xdata, event.ydata)
 
                         self.last_labeled = (cur_VB, self.CoordType)
                         self.update_status()
                         self.update_display()
                         self.update_table()
                         self.update_coord_tabs()
-                        self.save_status = nr.unsaved
+                        self.save_status = self.nr.unsaved
                         self.update_save_status_label()
                         
-                        # sanity check
-                        if self.StoreDict[cur_imgID][cur_VB][nr.SupPostCoords] != (None, None) \
-                            and self.StoreDict[cur_imgID][cur_VB][nr.SupAntCoords] != (None, None) \
-                            and self.StoreDict[cur_imgID][cur_VB][nr.InfAntCoords] != (None, None) \
-                            and self.StoreDict[cur_imgID][cur_VB][nr.InfPostCoords] != (None, None):
-                            points = [self.StoreDict[cur_imgID][cur_VB][nr.SupPostCoords],
-                                      self.StoreDict[cur_imgID][cur_VB][nr.SupAntCoords],
-                                      self.StoreDict[cur_imgID][cur_VB][nr.InfAntCoords],
-                                      self.StoreDict[cur_imgID][cur_VB][nr.InfPostCoords]
-                                     ]
+                        # # sanity check
+                        # flag = True
+                        # for j, coords in enumerate(self.StoreDict[cur_imgID][cur_VB]):
+                        #     if coords == self.nr.Fracture:
+                        #         continue
+                        #     if self.StoreDict[cur_imgID][cur_VB][coords] != (None, None): 
+                        #         flag = False
+                        #         break
+                        # if not flag:
+                        #     points = []
+                        #     for j, coords in enumerate(self.StoreDict[cur_imgID][cur_VB]):
+                        #         if coords == self.nr.Fracture:
+                        #             continue
+                        #         points.append(self.StoreDict[cur_imgID][cur_VB][coords])
   
-                            # if not checkAntiClockwise(points):
-                            if not sanity_check(points):
-                                self.sanity_dialog = QDialog()
-                                self.sanity_dialog.setWindowTitle('Alarm!')
-                                dlabel = QLabel("Are you sure you are marking in the anti-clockwise order or the image is correctly oriented?")
-                                self.sanityYesButton = QPushButton('Yes')
-                                self.sanityYesButton.clicked.connect(self.sanity_dialog.accept)
+                        #     if not checkPointsDirection(points, self.configs['sanity_check_direction']):
+                        #     # if not sanity_check(points):
+                        #         self.sanity_dialog = QDialog()
+                        #         self.sanity_dialog.setWindowTitle('Alarm!')
+                        #         dlabel = QLabel("Are you sure you are marking in the anti-clockwise order or the image is correctly oriented?")
+                        #         self.sanityYesButton = QPushButton('Yes')
+                        #         self.sanityYesButton.clicked.connect(self.sanity_dialog.accept)
 
-                                button_layout = QHBoxLayout()
-                                button_layout.addWidget(self.sanityYesButton)
-                                self.sanityDiaLayout = QVBoxLayout()
-                                self.sanityDiaLayout.addWidget(dlabel)
-                                self.sanityDiaLayout.addLayout(button_layout)
-                                self.sanity_dialog.setLayout(self.sanityDiaLayout)
-                                self.sanity_dialog.exec_()
+                        #         button_layout = QHBoxLayout()
+                        #         button_layout.addWidget(self.sanityYesButton)
+                        #         self.sanityDiaLayout = QVBoxLayout()
+                        #         self.sanityDiaLayout.addWidget(dlabel)
+                        #         self.sanityDiaLayout.addLayout(button_layout)
+                        #         self.sanity_dialog.setLayout(self.sanityDiaLayout)
+                        #         self.sanity_dialog.exec_()
                                        
             elif event.button == 3:
                 if event.dblclick:
@@ -1522,6 +1482,8 @@ class SpineLabelingApp(AppLayouts, InfoStorageDicts, QDialog):
     def key_press_whole(self, event, signal_from):
         """
         keyborad: connect to the whole window
+        modify the "event.key =='x':" lines below by changing the 'x' to any keyboard shortcut you would prefer for that function. You should change the related code under both "if signal_from == 0:" and "elif signal_from == 1:". Note that the same keyboard under "if signal_from == 0:" and "elif signal_from == 1:" could be different. Take 'w' as an example, under "if signal_from == 0:", it is naturally wrtten as 'w'. Under "elif signal_from == 1:", it is a QT object, QtCore.Qt.Key_W. For the QT objects, please see PyQt or Qt documents for more details. 
+        If using a programmable mouse these are the keystrokes that will need to be programmed on to the desired buttons in the mouse's configuration software.
         """
         if self.is_start_ui:
             return

@@ -2,11 +2,14 @@
 	"input_directory": "images/",
 	"zooming_speed": 1.2,
 	"window_level_sensitivity": 1,
-	"output_path": "results.csv",
-	"region_identifiers": ["S1","L5","L4","L3","L2","L1","T12","T11","T10","T9","T8","T7","T6","T5","T4","T3"],
-	"image_label": ["No","Possible","Definite"],
-	"region_labels": 
+	"path_for_result_file": "results.csv",
+	"region_identifier_list": ["L5", "L4", "L3", "L2", "L1"],
+	"image_label_description": "Osteopenia grade",
+	"image_label": ["0", "1", "2", "3", "4"],
+	"region_labels":
 	{
-		"checkbox":"Hardware/Metal"
-	}
+		"checkbox": "Artificial structure overlying",
+		"radiobuttons": [["Normal", "Fractured", "Unsure"]]
+	},
+	"bounding_polygon_type": 6
 }
