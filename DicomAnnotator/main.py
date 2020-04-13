@@ -10,7 +10,7 @@ import numpy as np
 
 from DicomAnnotator.app.myApp import *
 from DicomAnnotator.utils.namerules import *
-from DicomAnnotator.utils.cofig_process import *
+from DicomAnnotator.utils.configs_processing import *
 
 """
 Construct the ImgIDList
