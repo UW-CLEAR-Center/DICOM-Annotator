@@ -19,6 +19,7 @@ gstreamer=1.14.5=h36ae1b5_2
 icu=64.2=he1b5a44_1
 imagecodecs-lite=2019.12.3=py37h8f50634_0
 ipython_genutils=0.2.0=py37_0
+ipython=7.13.0=py37h5ca1d4c_0
 jpeg=9c=h14c3975_1001
 kiwisolver=1.2.0=py37h99015e2_0
 ld_impl_linux-64=2.34=h53a641e_0
