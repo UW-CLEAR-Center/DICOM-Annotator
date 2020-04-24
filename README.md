@@ -27,7 +27,7 @@ A float number determines how fast the image zooms in/out when the annotator scr
 A float number controls the rate at which the window and the level change when the mouse moves a unit of length. The smaller the attribute is, the slower the window/level rate is. 1 is a good choice. Default is 1.
 ## output_path
 A string specifies the path in which the result file will be stored. If there is no such file, the program will create the file after you press the save button in the start page. Default is 'results.csv'.
-## region_identifiers
+## list_region_identifiers
 The string list of region identifiers. Default is ['R0', 'R1', ..., 'R9']
 ## image_label_description
 A string describes what the image label is and is shown at the main page’s top-right corner. Default is 'Image Label'.
@@ -43,8 +43,8 @@ A string contains the region label’s candidate category in the form of a check
 A two dimensional list of strings contains the region labels’ candidate categories listed as ratio buttons in the main page’s annotation table. Must be set. Otherwise the program will raise error. Currently, only one group of region label's candidate categories can be set.
 ### default_radiobuttions
 A list of strings determines which region label's candidate category are set to default. Default is the first radiobutton in each group of region label's radiobuttons.
-## bounding_polygon_type
-Determines the bounding polygon's type. Must be set. It can be an integer, then each region should be outlined by this number of points. It also can be a integer list whose length is the same as region_identifiers' length. Each element in the list determines the number of points needed to outline the associated region.
+## number_bounding_polygon_vertices
+Determines the the number of bounding polygon's vertices. Must be set. It can be an integer, then each region should be outlined by this number of points. It also can be a integer list whose length is the same as region_identifiers' length. Each element in the list determines the number of points needed to outline the associated region.
 ## bounding_polygon_vertice_shape
 Determines the shape of points placed on images. Default is '.'. It can be a character, then all points are in this shape. It also can be a list of characters, in which each element detemines the shape of one polygon's vertex.
 ## bounding_polygon_vertices_tabs

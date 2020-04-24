@@ -22,8 +22,11 @@ def configuration_processing(config_filepath):
         configs['path_for_result_file'] = 'results.csv'
 
     ''' region_identifier list'''
-    if 'region_identifier_list' not in configs or configs['region_identifier_list'] is None:
+    if 'list_region_identifiers' not in configs or configs['list_region_identifiers'] is None:
         configs['region_identifier_list'] = ['R' + str(i) for i in range(10)]
+    else:
+        configs['region_identifier_list'] = configs['list_region_identifiers']
+
 
     '''image_label_description'''
     if 'image_label_description' not in configs or configs['image_label_description'] is None:
@@ -56,8 +59,9 @@ def configuration_processing(config_filepath):
     configs['region_labels']['default_radiobuttons'] = configs['region_labels']['default_radiobuttons'][0]
 
     ''' bounding_polygon_type '''
-    if "bounding_polygon_type" not in configs:
+    if "number_bounding_polygon_vertices" not in configs:
         raise Exception('Please define the bounding polygon type!')
+    configs['bounding_polygon_type'] = configs['number_bounding_polygon_vertices']
     if type(configs['bounding_polygon_type']) is not list:
         bounding_polygon_type = configs['bounding_polygon_type']
         configs['bounding_polygon_type'] = [bounding_polygon_type for i in configs['region_identifier_list']]

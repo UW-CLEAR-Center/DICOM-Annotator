@@ -3,7 +3,7 @@
 	"zooming_speed": 1.2,
 	"window_level_sensitivity": 1,
 	"path_for_result_file": "results.csv",
-	"region_identifier_list": ["L5", "L4", "L3", "L2", "L1"],
+	"list_region_identifiers": ["L5", "L4", "L3", "L2", "L1"],
 	"image_label_description": "Osteopenia grade",
 	"image_label": ["0", "1", "2", "3", "4"],
 	"region_labels":
@@ -11,5 +11,5 @@
 		"checkbox": "Artificial structure overlying",
 		"radiobuttons": [["Normal", "Fractured", "Unsure"]]
 	},
-	"bounding_polygon_type": 6
+	"number_bounding_polygon_vertices": 6
 }
