@@ -55,7 +55,7 @@ pandas=0.25.3=py37he6710b0_0
 pcre=8.44=he1b5a44_0
 pexpect=4.8.0=py37_0
 pickleshare=0.7.5=py37_0
-pillow=7.0.0=py37hb39fc2d_0
+pillow=8.1.1
 pip=20.0.2=py_2
 pthread-stubs=0.4=h14c3975_1001
 ptyprocess=0.6.0=py37_0
