@@ -59,7 +59,7 @@ pillow=8.1.1
 pip=20.0.2=py_2
 pthread-stubs=0.4=h14c3975_1001
 ptyprocess=0.6.0=py37_0
-pygments=2.6.1=py_0
+pygments>=2.7.4
 pyparsing=2.4.7=pyh9f0ad1d_0
 pyqt=5.12.3=py37hcca6a23_1
 python=3.7.6=h8356626_5_cpython
